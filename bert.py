@@ -13,6 +13,8 @@ class BertSelfAttention(nn.Module):
     self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
     self.all_head_size = self.num_attention_heads * self.attention_head_size
 
+    assert self.all_head_size == config.hidden_size
+
     # Initialize the linear transformation layers for key, value, query.
     self.query = nn.Linear(config.hidden_size, self.all_head_size)
     self.key = nn.Linear(config.hidden_size, self.all_head_size)
@@ -48,6 +50,18 @@ class BertSelfAttention(nn.Module):
     # - Multiply the attention scores with the value to get back weighted values.
     # - Before returning, concatenate multi-heads to recover the original shape:
     #   [bs, seq_len, num_attention_heads * attention_head_size = hidden_size].
+
+    assert key.dim() == query.dim() == value.dim() == 3
+    assert attention_mask.dim() == 2
+
+    batch_size, seq_length, hidden_size = key.shape
+    assert hidden_size == self.attention_head_size * self.num_attention_heads
+    assert attention_mask.shape == (batch_size, hidden_size)
+
+    print(f"{key.shape=}")
+    print(f"{query.shape=}")
+    print(f"{value.shape=}")
+    print(f"{attention_mask.shape=}")
 
     ### TODO
     raise NotImplementedError
