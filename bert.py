@@ -61,35 +61,32 @@ class BertSelfAttention(nn.Module):
     # - Multiply the attention scores with the value to get back weighted values.
     # - Before returning, concatenate multi-heads to recover the original shape:
     #   [bs, seq_len, num_attention_heads * attention_head_size = hidden_size].
+    assert key.dim() == query.dim() == value.dim() == 4
+    batch_size, seq_length = key.shape[0], key.shape[2]
+    assert key.shape == query.shape == value.shape == (batch_size, self.num_attention_heads, seq_length, self.attention_head_size)
+    assert attention_mask.shape == (batch_size, 1, 1, seq_length)
 
-    assert key.dim() == query.dim() == value.dim() == 3
-    assert attention_mask.dim() == 2
-    assert key.shape == query.shape == value.shape
-
-    batch_size, seq_length, hidden_size = key.shape
-    assert hidden_size == self.attention_head_size * self.num_attention_heads == self.all_head_size
-    assert attention_mask.shape == (batch_size, seq_length)
-
-    # dimensions for each are: batch_size, num_attention_heads, seq_length, attention_head_size
-    Q_for_each_head: Tensor = self.split_heads(self.query(query))
-    K_for_each_head: Tensor = self.split_heads(self.key(key))
-    V_for_each_head: Tensor = self.split_heads(self.value(value))
-    assert Q_for_each_head.shape == K_for_each_head.shape == V_for_each_head.shape == (batch_size, self.num_attention_heads, seq_length, self.attention_head_size)
+    # # dimensions for each are: batch_size, num_attention_heads, seq_length, attention_head_size
+    # Q_for_each_head: Tensor = self.split_heads(self.query(query))
+    # K_for_each_head: Tensor = self.split_heads(self.key(key))
+    # V_for_each_head: Tensor = self.split_heads(self.value(value))
+    # assert Q_for_each_head.shape == K_for_each_head.shape == V_for_each_head.shape == (batch_size, self.num_attention_heads, seq_length, self.attention_head_size)
 
     # compute the dot product between the Q vector (which has size attention_head_size) and the K vector (which also has size attention_head_size) for each word in the sequence,
     # for each attention head, for each batch.
-    attention_scores = Q_for_each_head.matmul(K_for_each_head.transpose(2, 3)) / (self.attention_head_size ** 0.5)
-    attention_scores = attention_scores + attention_mask.unsqueeze(1).unsqueeze(2) # mask out certain values
+    attention_scores = query.matmul(key.transpose(2, 3)) / (self.attention_head_size ** 0.5)
+    attention_scores = attention_scores + attention_mask # mask out certain values
     # dimension 2 corresponds to the Qs, dimension 3 corresponds to the Ks
     # softmax along the K dimension, so for each Q, they add to 1.
     attention_weights = F.softmax(attention_scores, dim=3)
+    # print(attention_scores.shape, attention_weights.shape, query.matmul(key.transpose(2, 3)).shape)
     assert attention_scores.shape == attention_weights.shape == (batch_size, self.num_attention_heads, seq_length, seq_length)
 
     # for each seq_length length vector in attention_scores (which sums to 1), multiple by the seq_length vector of hidden_dim values at a given index
     # this is computing for each key, a weighted average of the values.
-    attention_weighted_values = attention_weights.matmul(V_for_each_head)
+    attention_weighted_values = attention_weights.matmul(value)
     assert attention_weighted_values.shape == (batch_size, self.num_attention_heads, seq_length, self.attention_head_size)
-    return attention_weighted_values.transpose(1, 2).contiguous().view(batch_size, seq_length, hidden_size)
+    return attention_weighted_values.transpose(1, 2).contiguous().view(batch_size, seq_length, self.all_head_size)
 
     """
     Let's say:
@@ -148,8 +145,19 @@ class BertLayer(nn.Module):
     """
     # Hint: Remember that BERT applies dropout to the transformed output of each sub-layer,
     # before it is added to the sub-layer input and normalized with a layer norm.
-    ### TODO
-    raise NotImplementedError
+
+    batch_size, seq_len, hidden_size = input.shape
+
+    output = dense_layer(output)
+    output = dropout(output)
+    # shape should be the same after applying dense_layer + dropout
+    assert output.shape == input.shape
+  
+    output = output + input
+    output = ln_layer(output)
+    # shape should be the same after applying dense_layer + dropout
+    assert output.shape == input.shape
+    return output
 
 
   def forward(self, hidden_states, attention_mask):
@@ -162,8 +170,33 @@ class BertLayer(nn.Module):
     3. A feed forward layer.
     4. An add-norm operation that takes the input and output of the feed forward layer.
     """
-    ### TODO
-    raise NotImplementedError
+    # 1. Multi-head attention
+    attn_output = self.self_attention(hidden_states, attention_mask)
+    
+    # 2. Add-norm after attention layer
+    # Pass the output of the attention layer and the original input to the add-norm function
+    attn_output = self.add_norm(
+        input=hidden_states,
+        output=attn_output,
+        dense_layer=self.attention_dense,
+        dropout=self.attention_dropout,
+        ln_layer=self.attention_layer_norm
+    )
+
+    # Step 3: Feed-forward network
+    intermediate_output = self.interm_dense(attn_output)
+    intermediate_output = self.interm_af(intermediate_output)
+
+    # Step 4: Add-norm for feed-forward network output
+    layer_output = self.add_norm(
+        input=attn_output,
+        output=intermediate_output,
+        dense_layer=self.out_dense,
+        dropout=self.out_dropout,
+        ln_layer=self.out_layer_norm
+    )
+
+    return layer_output
 
 
 
@@ -200,30 +233,36 @@ class BertModel(BertPreTrainedModel):
     self.init_weights()
 
   def embed(self, input_ids):
-    input_shape = input_ids.size()
-    seq_length = input_shape[1]
+    # Step 1: Get word embedding from self.word_embedding
+    input_embeds = self.word_embedding(input_ids)
+    assert input_embeds.shape == (input_ids.size(0), input_ids.size(1), self.config.hidden_size), \
+        f"Word embeddings shape {input_embeds.shape} should be [batch_size, seq_length, hidden_size]"
 
-    # Get word embedding from self.word_embedding into input_embeds.
-    inputs_embeds = None
-    ### TODO
-    raise NotImplementedError
-
-
-    # Use pos_ids to get position embedding from self.pos_embedding into pos_embeds.
+    # Step 2: Get position embedding using self.pos_embedding and position_ids
+    seq_length = input_ids.size(1)
     pos_ids = self.position_ids[:, :seq_length]
-    pos_embeds = None
-    ### TODO
-    raise NotImplementedError
+    pos_embeds = self.pos_embedding(pos_ids)
+    assert pos_embeds.shape == (1, seq_length, self.config.hidden_size), \
+        f"Position embeddings shape {pos_embeds.shape} should be [1, seq_length, hidden_size]"
 
-
-    # Get token type ids. Since we are not considering token type, this embedding is
-    # just a placeholder.
-    tk_type_ids = torch.zeros(input_shape, dtype=torch.long, device=input_ids.device)
+    # Step 3: Get token type embeddings using self.tk_type_embedding
+    # Since we are not considering token type, this embedding is a placeholder
+    tk_type_ids = torch.zeros_like(input_ids, dtype=torch.long, device=input_ids.device)
     tk_type_embeds = self.tk_type_embedding(tk_type_ids)
+    assert tk_type_embeds.shape == (input_ids.size(0), seq_length, self.config.hidden_size), \
+        f"Token type embeddings shape {tk_type_embeds.shape} should be [batch_size, seq_length, hidden_size]"
 
-    # Add three embeddings together; then apply embed_layer_norm and dropout and return.
-    ### TODO
-    raise NotImplementedError
+    # Step 4: Add word, position, and token type embeddings together
+    embeddings = input_embeds + pos_embeds + tk_type_embeds
+
+    # Step 5: Apply layer normalization and dropout
+    embeddings = self.embed_layer_norm(embeddings)
+    embeddings = self.embed_dropout(embeddings)
+
+    assert embeddings.shape == (input_ids.size(0), seq_length, self.config.hidden_size), \
+        f"Final embeddings shape {embeddings.shape} should be [batch_size, seq_length, hidden_size]"
+
+    return embeddings
 
 
   def encode(self, hidden_states, attention_mask):
@@ -251,7 +290,6 @@ class BertModel(BertPreTrainedModel):
     """
     # Get the embedding for each input token.
     embedding_output = self.embed(input_ids=input_ids)
-
     # Feed to a transformer (a stack of BertLayers).
     sequence_output = self.encode(embedding_output, attention_mask=attention_mask)
 
