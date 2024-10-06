@@ -34,6 +34,17 @@ class BertSelfAttention(nn.Module):
     # By proper transpose, we have proj of size [bs, num_attention_heads, seq_len, attention_head_size].
     proj = proj.transpose(1, 2)
     return proj
+  
+  def split_heads(self, x: Tensor):
+    """
+    assume x is a Tensor with dimensions (batch_size, seq_length, hidden_size)
+    Returns a Tensor with dimensions (batch_size, num_attention_heads, seq_length, attention_head_size)
+    """
+    # Split the last dimension into (num_heads, d_head)
+    assert x.dim() == 3
+    batch_size, seq_length = x.shape[0], x.shape[1]
+    x = x.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size)
+    return x.transpose(1, 2)
 
   def attention(self, key, query, value, attention_mask):
     # Each attention is calculated following eq. (1) of https://arxiv.org/pdf/1706.03762.pdf.
@@ -53,18 +64,43 @@ class BertSelfAttention(nn.Module):
 
     assert key.dim() == query.dim() == value.dim() == 3
     assert attention_mask.dim() == 2
+    assert key.shape == query.shape == value.shape
 
     batch_size, seq_length, hidden_size = key.shape
-    assert hidden_size == self.attention_head_size * self.num_attention_heads
-    assert attention_mask.shape == (batch_size, hidden_size)
+    assert hidden_size == self.attention_head_size * self.num_attention_heads == self.all_head_size
+    assert attention_mask.shape == (batch_size, seq_length)
 
-    print(f"{key.shape=}")
-    print(f"{query.shape=}")
-    print(f"{value.shape=}")
-    print(f"{attention_mask.shape=}")
+    # dimensions for each are: batch_size, num_attention_heads, seq_length, attention_head_size
+    Q_for_each_head: Tensor = self.split_heads(self.query(query))
+    K_for_each_head: Tensor = self.split_heads(self.key(key))
+    V_for_each_head: Tensor = self.split_heads(self.value(value))
+    assert Q_for_each_head.shape == K_for_each_head.shape == V_for_each_head.shape == (batch_size, self.num_attention_heads, seq_length, self.attention_head_size)
 
-    ### TODO
-    raise NotImplementedError
+    # compute the dot product between the Q vector (which has size attention_head_size) and the K vector (which also has size attention_head_size) for each word in the sequence,
+    # for each attention head, for each batch.
+    attention_scores = Q_for_each_head.matmul(K_for_each_head.transpose(2, 3)) / (self.attention_head_size ** 0.5)
+    attention_scores = attention_scores + attention_mask.unsqueeze(1).unsqueeze(2) # mask out certain values
+    # dimension 2 corresponds to the Qs, dimension 3 corresponds to the Ks
+    # softmax along the K dimension, so for each Q, they add to 1.
+    attention_weights = F.softmax(attention_scores, dim=3)
+    assert attention_scores.shape == attention_weights.shape == (batch_size, self.num_attention_heads, seq_length, seq_length)
+
+    # for each seq_length length vector in attention_scores (which sums to 1), multiple by the seq_length vector of hidden_dim values at a given index
+    # this is computing for each key, a weighted average of the values.
+    attention_weighted_values = attention_weights.matmul(V_for_each_head)
+    assert attention_weighted_values.shape == (batch_size, self.num_attention_heads, seq_length, self.attention_head_size)
+    return attention_weighted_values.transpose(1, 2).contiguous().view(batch_size, seq_length, hidden_size)
+
+    """
+    Let's say:
+    H = hidden_size
+    N = num_heads
+
+    self.query is an HxH matrix. We can think of it as N different Hx(H/N) matrices. Each of those matrices
+    is responsible for extracting the length H/N "key" for a given attention head. We compute all N keys (each length H/N)
+    in a single matrix multiplication, yielding a matrix with dimension seq_length * H (but we can really think of it as
+    seq_length * (H/N) * N)
+    """
 
 
   def forward(self, hidden_states, attention_mask):
