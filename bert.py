@@ -66,12 +66,6 @@ class BertSelfAttention(nn.Module):
     assert key.shape == query.shape == value.shape == (batch_size, self.num_attention_heads, seq_length, self.attention_head_size)
     assert attention_mask.shape == (batch_size, 1, 1, seq_length)
 
-    # # dimensions for each are: batch_size, num_attention_heads, seq_length, attention_head_size
-    # Q_for_each_head: Tensor = self.split_heads(self.query(query))
-    # K_for_each_head: Tensor = self.split_heads(self.key(key))
-    # V_for_each_head: Tensor = self.split_heads(self.value(value))
-    # assert Q_for_each_head.shape == K_for_each_head.shape == V_for_each_head.shape == (batch_size, self.num_attention_heads, seq_length, self.attention_head_size)
-
     # compute the dot product between the Q vector (which has size attention_head_size) and the K vector (which also has size attention_head_size) for each word in the sequence,
     # for each attention head, for each batch.
     attention_scores = query.matmul(key.transpose(2, 3)) / (self.attention_head_size ** 0.5)
@@ -232,16 +226,17 @@ class BertModel(BertPreTrainedModel):
 
     self.init_weights()
 
-  def embed(self, input_ids):
+  def embed(self, input_ids: Tensor):
+
+    batch_size, seq_length = input_ids.shape
+
     # Step 1: Get word embedding from self.word_embedding
     input_embeds = self.word_embedding(input_ids)
-    assert input_embeds.shape == (input_ids.size(0), input_ids.size(1), self.config.hidden_size), \
+    assert input_embeds.shape == (batch_size, seq_length, self.config.hidden_size), \
         f"Word embeddings shape {input_embeds.shape} should be [batch_size, seq_length, hidden_size]"
-
     # Step 2: Get position embedding using self.pos_embedding and position_ids
-    seq_length = input_ids.size(1)
-    pos_ids = self.position_ids[:, :seq_length]
-    pos_embeds = self.pos_embedding(pos_ids)
+    pos_ids = self.position_ids[:, :seq_length] # shape is (1, seq_length)
+    pos_embeds = self.pos_embedding(pos_ids) # shape is (1, seq_length, hidden_size)
     assert pos_embeds.shape == (1, seq_length, self.config.hidden_size), \
         f"Position embeddings shape {pos_embeds.shape} should be [1, seq_length, hidden_size]"
 
