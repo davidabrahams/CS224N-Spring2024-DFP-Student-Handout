@@ -4,6 +4,7 @@ import csv
 
 import torch
 import torch.nn.functional as F
+from torch import Tensor
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import f1_score, accuracy_score
 
@@ -46,19 +47,40 @@ class BertSentimentClassifier(torch.nn.Module):
                 param.requires_grad = False
             elif config.fine_tune_mode == 'full-model':
                 param.requires_grad = True
+        self.classifier = torch.nn.Linear(config.hidden_size, self.num_labels)
+        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+        print(f"Using dropout: {config.hidden_dropout_prob=}")
 
-        # Create any instance variables you need to classify the sentiment of BERT embeddings.
-        ### TODO
-        raise NotImplementedError
-
-
-    def forward(self, input_ids, attention_mask):
+    
+    def forward(self, input_ids: Tensor, attention_mask: Tensor):
         '''Takes a batch of sentences and returns logits for sentiment classes'''
         # The final BERT contextualized embedding is the hidden state of [CLS] token (the first token).
         # HINT: You should consider what is an appropriate return value given that
         # the training loop currently uses F.cross_entropy as the loss function.
         ### TODO
-        raise NotImplementedError
+        # Get BERT outputs; we're only interested in the pooled output, which corresponds to the [CLS] token.
+        assert isinstance(input_ids, Tensor)
+        assert isinstance(attention_mask, Tensor)
+        batch_size, seq_length = input_ids.shape
+        assert input_ids.shape == attention_mask.shape == (batch_size, seq_length)
+        # dict {'last_hidden_state': Tensor, 'pooler_output': Tensor}
+        # see def forward in bert.py to see what is returned
+        bert_output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        hidden_size = bert_output['last_hidden_state'].size(2)
+        assert bert_output['last_hidden_state'].shape == (batch_size, seq_length, hidden_size)
+        assert bert_output['pooler_output'].shape == (batch_size, hidden_size)
+
+        # Extract the [CLS] token representation, which is at index 0.
+        cls_embedding = bert_output['pooler_output']
+
+        # Apply dropout
+        cls_embedding = self.dropout(cls_embedding)
+
+        # Get the logits for each class
+        logits = self.classifier(cls_embedding)
+
+        return logits
+
 
 
 
